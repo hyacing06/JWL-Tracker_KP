@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>JWL Tracker</title>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <style>
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #f9fafb;
+      margin: 0;
+      padding: 20px;
+    }
+
+    h2 {
+      margin-bottom: 10px;
+      color: #2c3e50;
+    }
+
+    .action-buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 15px;
+      align-items: center;
+    }
+
+    button, select, input[type="text"], input[type="file"] {
+      padding: 6px 12px;
+      border-radius: 8px;
+      border: 1px solid #ccc;
+      font-size: 14px;
+    }
+
+    button {
+      background: #4CAF50;
+      color: white;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    button:hover {
+      background: #45a049;
+    }
+
+    button.danger {
+      background: #e74c3c;
+    }
+
+    button.danger:hover {
+      background: #c0392b;
+    }
+
+    button.secondary {
+      background: #3498db;
+    }
+
+    button.secondary:hover {
+      background: #2980b9;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: white;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    thead th {
+      background-color: #dfe6e9;
+      color: #2d3436;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      padding: 10px;
+    }
+
+    td, th {
+      border: 1px solid #ccc;
+      padding: 8px;
+      text-align: left;
+    }
+
+    tbody tr:hover {
+      background-color: #f1f2f6;
+    }
+
+    input[type="checkbox"] {
+      transform: scale(1.2);
+    }
+
+    input[type="text"], input[type="number"], select {
+      width: 100%;
+      box-sizing: border-box;
+    }
+
+    .saved-indicator {
+      color: green;
+      font-weight: bold;
+      font-size: 0.9em;
+    }
+
+    .toggle {
+      cursor: pointer;
+    }
+
+    @media (max-width: 768px) {
+      .action-buttons {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+    }
+  </style>
+</head>
+<body>
+  <h2>JWL Tracker</h2>
+
+  <div class="action-buttons">
+    <input type="file" id="fileInput" />
+    <button class="secondary" onclick="exportToExcel()">Export</button>
+    <button class="secondary" onclick="undoLast()">Undo</button>
+    <button onclick="addRow()">Add Row</button>
+    <label>CSR Rep:</label>
+    <select id="repSelect"></select>
+    <input type="text" id="newRep" placeholder="Add rep name" />
+    <button onclick="addRep()">Add Rep</button>
+    <button class="danger" onclick="removeRep()">Remove Selected Rep</button>
+    <span class="saved-indicator" id="saveStatus"></span>
+  </div>
+
+  <table id="dataTable"></table>
+
+  <script>
+    const headers = ["Date", "Order ID", "Marketplace", "Reduced Dim?", "JWL Sent?", "Date JWL Template Sent", "Amount Refunded", "Refund Issued?", "CSR Rep", "Reason of JWL", "SKU", "Notes"];
+    let tableData = [];
+    let history = [];
+    let csrReps = [];
+    let currentRep = '';
+
+    const fileInput = document.getElementById('fileInput');
+    const dataTable = document.getElementById('dataTable');
+    const repSelect = document.getElementById('repSelect');
+    const saveStatus = document.getElementById('saveStatus');
+
+    fileInput.addEventListener('change', e => {
+      if (e.target.files.length === 0) return;
+      const file = e.target.files[0];
+      const reader = new FileReader();
+      reader.onload = function (evt) {
+        const data = new Uint8Array(evt.target.result);
+        const workbook = XLSX.read(data, { type: 'array' });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const parsed = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+        const today = new Date().toISOString().split('T')[0];
+        const shouldReplace = confirm("Do you want to REPLACE the existing data? Click Cancel to APPEND.");
+
+        const newData = parsed.map(row => {
+          const rowData = {};
+          headers.forEach(h => {
+            const match = Object.keys(row).find(k => k.toLowerCase().includes(h.toLowerCase()));
+            rowData[h] = match ? row[match] : '';
+          });
+          rowData['Date'] = today;
+          rowData['Date JWL Template Sent'] = rowData['JWL Sent?'].toLowerCase() === 'yes' ? today : '';
+          rowData['CSR Rep'] = currentRep;
+          return rowData;
+        });
+
+        if (shouldReplace) tableData = newData;
+        else tableData.push(...newData);
+
+        saveData();
+        renderTable();
+      };
+      reader.readAsArrayBuffer(file);
+    });
+
+    function renderTable() {
+      dataTable.innerHTML = '';
+      const thead = document.createElement('thead');
+      const headRow = document.createElement('tr');
+      headers.forEach(h => {
+        const th = document.createElement('th');
+        th.textContent = h;
+        headRow.appendChild(th);
+      });
+      const thDelete = document.createElement('th');
+      thDelete.textContent = 'Actions';
+      headRow.appendChild(thDelete);
+      thead.appendChild(headRow);
+      dataTable.appendChild(thead);
+
+      const tbody = document.createElement('tbody');
+      tableData.forEach((row, i) => {
+        const tr = document.createElement('tr');
+        headers.forEach(h => {
+          const td = document.createElement('td');
+          if (h === 'Date') {
+            td.textContent = row[h];
+          } else if (h === 'JWL Sent?' || h === 'Reduced Dim?' || h === 'Refund Issued?') {
+            const toggle = document.createElement('input');
+            toggle.type = 'checkbox';
+            toggle.checked = row[h] === 'yes';
+            toggle.className = 'toggle';
+            toggle.addEventListener('change', () => {
+              row[h] = toggle.checked ? 'yes' : 'no';
+              if (h === 'JWL Sent?') row['Date JWL Template Sent'] = toggle.checked ? new Date().toISOString().split('T')[0] : '';
+              saveData();
+              renderTable();
+            });
+            td.appendChild(toggle);
+          } else {
+            const input = document.createElement('input');
+            input.value = row[h];
+            input.addEventListener('input', () => {
+              row[h] = input.value;
+              saveData();
+            });
+            td.appendChild(input);
+          }
+          tr.appendChild(td);
+        });
+        const tdAction = document.createElement('td');
+        const delBtn = document.createElement('button');
+        delBtn.textContent = 'Delete';
+        delBtn.className = 'danger';
+        delBtn.onclick = () => {
+          if (confirm('Are you sure you want to delete this row?')) {
+            tableData.splice(i, 1);
+            saveData();
+            renderTable();
+          }
+        };
+        tdAction.appendChild(delBtn);
+        tr.appendChild(tdAction);
+        tbody.appendChild(tr);
+      });
+      dataTable.appendChild(tbody);
+    }
+
+    function addRow() {
+      const newRow = {};
+      headers.forEach(h => {
+        newRow[h] = h === 'Date' ? new Date().toISOString().split('T')[0] : h === 'CSR Rep' ? currentRep : '';
+      });
+      tableData.push(newRow);
+      saveData();
+      renderTable();
+    }
+
+    function exportToExcel() {
+      const ws = XLSX.utils.json_to_sheet(tableData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+      XLSX.writeFile(wb, 'export.xlsx');
+    }
+
+    function undoLast() {
+      if (history.length > 0) {
+        tableData = history.pop();
+        saveData();
+        renderTable();
+      }
+    }
+
+    function addRep() {
+      const name = document.getElementById('newRep').value.trim();
+      if (name && !csrReps.includes(name)) {
+        csrReps.push(name);
+        currentRep = name;
+        renderReps();
+        saveData();
+      }
+    }
+
+    function removeRep() {
+      if (currentRep && csrReps.includes(currentRep)) {
+        csrReps = csrReps.filter(rep => rep !== currentRep);
+        currentRep = csrReps.length ? csrReps[0] : '';
+        renderReps();
+        saveData();
+      }
+    }
+
+    function renderReps() {
+      repSelect.innerHTML = '';
+      csrReps.forEach(name => {
+        const option = document.createElement('option');
+        option.textContent = name;
+        option.value = name;
+        if (name === currentRep) option.selected = true;
+        repSelect.appendChild(option);
+      });
+    }
+
+    repSelect.addEventListener('change', e => {
+      currentRep = e.target.value;
+    });
+
+    function saveData() {
+      history.push(JSON.parse(JSON.stringify(tableData)));
+      if (history.length > 100) history.shift(); // cap history
+      localStorage.setItem('tableData', JSON.stringify(tableData));
+      localStorage.setItem('csrReps', JSON.stringify(csrReps));
+      localStorage.setItem('currentRep', currentRep);
+      saveStatus.textContent = '✅ Saved';
+      setTimeout(() => saveStatus.textContent = '', 2000);
+    }
+
+    window.onload = function () {
+      tableData = JSON.parse(localStorage.getItem('tableData')) || [];
+      csrReps = JSON.parse(localStorage.getItem('csrReps')) || [];
+      currentRep = localStorage.getItem('currentRep') || '';
+      renderReps();
+      renderTable();
+    };
+  </script>
+</body>
+</html>
